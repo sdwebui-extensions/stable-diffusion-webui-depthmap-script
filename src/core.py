@@ -30,6 +30,15 @@ from inpaint.networks import Inpaint_Color_Net, Inpaint_Depth_Net, Inpaint_Edge_
 from inpaint.utils import path_planning
 from inpaint.bilateral_filtering import sparse_bilateral_filtering
 
+from modules import shared
+import requests
+from modules.api import api
+import numpy as np
+import json
+
+def to_base64_PIL(encoding: str):
+    return api.decode_base64_to_image(encoding)
+
 global video_mesh_data, video_mesh_fn
 video_mesh_data = None
 video_mesh_fn = None
@@ -113,7 +122,7 @@ def core_generation_funnel(outpath, inputimages, inputdepthmaps, inputnames, inp
     inpaint_depths = []
 
     try:
-        if not inputdepthmaps_complete:
+        if (not inputdepthmaps_complete) and (not shared.cmd_opts.just_ui):
             print("Loading model(s) ..")
             model_holder.ensure_models(inp[go.MODEL_TYPE], device, inp[go.BOOST])
         model = model_holder.depth_model
@@ -152,8 +161,29 @@ def core_generation_funnel(outpath, inputimages, inputdepthmaps, inputnames, inp
                 else:
                     net_width = inp[go.NET_WIDTH]
                     net_height = inp[go.NET_HEIGHT]
-                raw_prediction, raw_prediction_invert = \
-                    model_holder.get_raw_prediction(inputimages[count], net_width, net_height)
+                if shared.cmd_opts.just_ui:
+                    results = requests.post('/'.join([shared.cmd_opts.server_path, 'depth/process']), json=dict(
+                        depth_input_images = [shared.encode_image_to_base64(d_img) for d_img in inputimages],
+                        compute_device = 'gpu',
+                        model_type = ['res101', 'dpt_beit_large_512 (midas 3.1)',
+                        'dpt_beit_large_384 (midas 3.1)', 'dpt_large_384 (midas 3.0)',
+                        'dpt_hybrid_384 (midas 3.0)',
+                        'midas_v21', 'midas_v21_small',
+                        'zoedepth_n (indoor)', 'zoedepth_k (outdoor)', 'zoedepth_nk'][inp['model_type']],
+                        net_width = net_width,
+                        net_height = net_height, 
+                        net_size_match =  inp["net_size_match"],
+                        boost = inp["boost"],
+                        output_depth_invert = inp["output_depth_invert"]
+                    ))
+                    if results.status_code==200:
+                        raw_prediction = np.array(to_base64_PIL(json.loads(results.text)['images'][0]))
+                        raw_prediction_invert = inp['model_type'] in [0, 7, 8, 9]
+                    else:
+                        raise Exception(f'generation image depth failed with {results.text}')
+                else:
+                    raw_prediction, raw_prediction_invert = \
+                        model_holder.get_raw_prediction(inputimages[count], net_width, net_height)
 
                 # output
                 if abs(raw_prediction.max() - raw_prediction.min()) > np.finfo("float").eps:
